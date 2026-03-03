@@ -1,0 +1,1352 @@
+<script>
+  let globalSettings = []; 
+  let isAddMode = false;
+
+  window.onload = () => {
+    console.log("System Ready. Waiting for login...");
+  };
+
+  // ==========================================
+  // 1. AUTHENTICATION LOGIC
+  // ==========================================
+  function handleLogin() {
+    const btn = document.querySelector('.btn-primary-gradient');
+    const user = document.getElementById('username').value;
+    const pass = document.getElementById('password').value;
+
+    if (!user || !pass) {
+      Swal.fire("Error", "Please enter credentials", "error");
+      return;
+    }
+
+    btn.disabled = true; 
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Verifying...';
+
+    google.script.run
+      .withSuccessHandler(isValid => {
+        btn.disabled = false;
+        btn.innerHTML = 'LOG IN TO SYSTEM <i class="bi bi-arrow-right-short ms-2"></i>';
+
+        if (isValid) {
+          document.getElementById('loginPage').classList.add('hidden'); 
+          document.getElementById('mainDashboard').classList.remove('hidden');
+          
+          if (typeof initFilters === "function") initFilters(); 
+          if (typeof loadSettings === "function") loadSettings();
+          
+          Swal.fire({ 
+            icon: 'success', 
+            title: 'Welcome Back!', 
+            timer: 1500, 
+            showConfirmButton: false 
+          });
+        } else {
+          Swal.fire("Access Denied", "Invalid username or password", "error");
+        }
+      })
+      .withFailureHandler(err => {
+        btn.disabled = false;
+        btn.innerHTML = 'LOG IN TO SYSTEM <i class="bi bi-arrow-right-short ms-2"></i>';
+        Swal.fire("System Error", err.message, "error");
+      })
+      .checkLogin(user, pass);
+  }
+
+  function handleLogout() {
+    Swal.fire({
+      title: 'Logout?',
+      text: "You will be returned to the login screen.",
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#0d6efd',
+      cancelButtonColor: '#64748b',
+      confirmButtonText: 'Yes, Logout'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        document.getElementById('mainDashboard').classList.add('hidden');
+        document.getElementById('loginPage').classList.remove('hidden');
+        document.getElementById('username').value = '';
+        document.getElementById('password').value = '';
+        
+        Swal.fire({ icon: 'success', title: 'Logged Out', timer: 1000, showConfirmButton: false });
+      }
+    });
+  }
+
+  // ==========================================
+  // 2. EMPLOYEE MASTER LIST (NEW UI LOGIC)
+  // ==========================================
+  
+  function smartFilter() {
+    const input = document.getElementById('universalSearch');
+    const filter = input.value.toUpperCase();
+    
+    // 1. Identify which tab is currently visible
+    const activeTab = document.querySelector('.tab-pane.active');
+    if (!activeTab) return;
+
+    // 2. Find the table body inside that active tab
+    const tbody = activeTab.querySelector('tbody');
+    if (!tbody) return;
+
+    const rows = tbody.getElementsByTagName("tr");
+
+    for (let i = 0; i < rows.length; i++) {
+        let rowVisible = false;
+        const cells = rows[i].getElementsByTagName("td");
+        
+        for (let j = 0; j < cells.length; j++) {
+            const textValue = cells[j].textContent || cells[j].innerText;
+            if (textValue.toUpperCase().indexOf(filter) > -1) {
+                rowVisible = true;
+                break;
+            }
+        }
+        rows[i].style.display = rowVisible ? "" : "none";
+    }
+}
+
+  function loadSettings(isSilent = false) {
+  const adminBody = document.getElementById('adminBody');
+  if (!adminBody) return;
+
+  // Ipakita lang ang spinner kung walang laman ang table (First load)
+  if (!isSilent && adminBody.innerHTML.trim() === "") {
+    adminBody.innerHTML = '<tr><td colspan="7" class="text-center py-5"><div class="spinner-border text-primary"></div><br>Syncing Master List...</td></tr>';
+  }
+
+  google.script.run.withSuccessHandler(settings => {
+    globalSettings = settings;
+    
+    // Update ang badge count
+    const badge = document.getElementById('empCountBadge');
+    if (badge) badge.innerText = `${settings.length} Records`;
+    
+    // Generate ang bagong HTML content
+    const newRows = settings.map(r => {
+      const empId = r[0] || 'N/A';
+      const name = r[1] || '---';
+      const type = r[4] || 'REGULAR';
+      const salary = parseFloat(r[8] || 0);
+      const isExempt = r[20] && r[20].toString().toUpperCase() === "EXEMPTED";
+
+      return `
+        <tr>
+          <td class="ps-4">
+            <span class="badge bg-light text-dark border-secondary-subtle">${empId}</span>
+          </td>
+          <td class="fw-bold text-uppercase">
+            ${name}
+            ${isExempt ? '<i class="bi bi-shield-fill-check text-success ms-1" title="Exempted from Late"></i>' : ''}
+          </td>
+          <td>
+            <div class="small fw-semibold text-secondary">${r[2] || ''}</div>
+            <div class="tiny text-muted">${r[3] || ''}</div>
+          </td>
+          <td>
+            <span class="badge ${type === 'Regular' ? 'bg-primary-subtle text-primary' : 'bg-warning-subtle text-warning'} text-uppercase">
+              ${type}
+            </span>
+          </td>
+          <td class="fw-bold text-dark">₱${salary.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+          <td class="text-center">
+            <div class="btn-group shadow-sm">
+              <button class="btn btn-white btn-sm border" onclick="editEmployee('${r[0]}')" title="Edit">
+                <i class="bi bi-pencil-square text-primary"></i>
+              </button>
+              <button class="btn btn-white btn-sm border" onclick="deleteEmployee('${r[1]}')" title="Delete">
+                <i class="bi bi-trash text-danger"></i>
+              </button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+
+    // ANTI-FLICKER: I-update lang ang table kung may nabago sa data
+    if (adminBody.innerHTML !== newRows) {
+      adminBody.innerHTML = newRows;
+    }
+
+    // Update ang dropdown silently
+    const admDropdown = document.getElementById('admName');
+    if (admDropdown) {
+      const newOptions = '<option value="">-- Select Employee --</option>' + 
+                         settings.map(r => `<option value="${r[1]}">${r[1]}</option>`).join('');
+      if (admDropdown.innerHTML !== newOptions) {
+        admDropdown.innerHTML = newOptions;
+      }
+    }
+  }).getSettingsData();
+}
+
+async function showAddEmployeeModal(existingEmp = null) {
+  const isEdit = !!existingEmp;
+  // Initialize with 21 empty strings to cover Column A (0) to U (20)
+  const data = isEdit ? existingEmp : new Array(21).fill("");
+
+  // --- HELPER FUNCTION PARA SA ORAS ---
+  const formatTimeForInput = (timeString) => {
+    if (!timeString || timeString === "") return "";
+    try {
+      const date = new Date("2000/01/01 " + timeString);
+      if (isNaN(date.getTime())) {
+        return timeString.match(/^\d{2}:\d{2}$/) ? timeString : "";
+      }
+      const hh = date.getHours().toString().padStart(2, '0');
+      const mm = date.getMinutes().toString().padStart(2, '0');
+      return `${hh}:${mm}`;
+    } catch (e) {
+      return "";
+    }
+  };
+
+  const { value: formValues } = await Swal.fire({
+    width: '1100px',
+    padding: '0',
+    background: 'transparent',
+    showConfirmButton: false,
+    showCloseButton: true,
+    html: `
+      <style>
+        :root { --accent: #6366f1; --bg-dark: #0f172a; --glass: rgba(255, 255, 255, 0.9); }
+        .ultra-modal { display: flex; height: 720px; background: var(--glass); backdrop-filter: blur(20px); border-radius: 30px; overflow: hidden; border: 1px solid rgba(255,255,255,0.4); box-shadow: 0 50px 100px -20px rgba(0,0,0,0.3); }
+        .analytics-hub { width: 380px; background: var(--bg-dark); color: white; padding: 40px; display: flex; flex-direction: column; }
+        .status-badge { background: rgba(99, 102, 241, 0.2); color: #818cf8; padding: 5px 12px; border-radius: 20px; font-size: 0.7rem; font-weight: 700; width: fit-content; margin-bottom: 20px; }
+        .live-card { background: rgba(255,255,255,0.05); border-radius: 20px; padding: 25px; border: 1px solid rgba(255,255,255,0.1); margin-top: 20px; }
+        .metric-label { color: #94a3b8; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; }
+        .metric-val { font-size: 1.5rem; font-weight: 700; margin-bottom: 15px; display: block; }
+        .mini-chart-bar { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; margin: 10px 0; }
+        .mini-chart-fill { height: 100%; background: var(--accent); width: 0%; transition: 1s ease-out; }
+        .workspace { flex: 1; padding: 50px; text-align: left; overflow-y: auto; display: flex; flex-direction: column; }
+        .workspace-header { margin-bottom: 40px; }
+        .tab-btn { background: none; border: none; font-weight: 600; color: #94a3b8; padding: 10px 20px; transition: 0.3s; position: relative; }
+        .tab-btn.active { color: var(--bg-dark); }
+        .tab-btn.active::after { content: ''; position: absolute; bottom: 0; left: 20px; right: 20px; height: 3px; background: var(--accent); border-radius: 10px; }
+        .floating-field { position: relative; margin-bottom: 25px; }
+        .floating-field input, .floating-field select { width: 100%; padding: 15px 0; border: none; border-bottom: 2px solid #e2e8f0; background: transparent; font-size: 1rem; transition: 0.3s; }
+        .floating-field input:focus { outline: none; border-color: var(--accent); }
+        .floating-field label { position: absolute; top: -10px; left: 0; font-size: 0.7rem; font-weight: 800; color: var(--accent); text-transform: uppercase; letter-spacing: 1px; }
+        .step-panel { display: none; animation: fadeIn 0.5s ease forwards; }
+        .step-panel.active { display: block; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(15px); } to { opacity: 1; transform: translateY(0); } }
+        .pro-btn { padding: 16px 35px; border-radius: 16px; font-weight: 700; border: none; cursor: pointer; transition: 0.3s; }
+        .pro-btn-next { background: var(--bg-dark); color: white; }
+        .pro-btn-next:hover { transform: scale(1.05); background: #1e293b; box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+        
+        /* New Exemption Box Style */
+        .exempt-box { background: rgba(99, 102, 241, 0.05); border: 1px dashed var(--accent); border-radius: 15px; padding: 15px; margin-bottom: 25px; }
+      </style>
+
+      <div class="ultra-modal">
+        <div class="analytics-hub">
+          <div class="status-badge">${isEdit ? 'RECORD LOCKED' : 'NEW ASSIGNMENT'}</div>
+          <h2 class="fw-bold mb-0" id="live-name">---</h2>
+          <p id="live-id" class="text-muted small mb-4">Awaiting credentials...</p>
+          
+          <div class="live-card">
+            <span class="metric-label">Estimated Monthly Gross</span>
+            <span class="metric-val" id="live-salary">₱ 0.00</span>
+            <span class="metric-label">Financial Footprint</span>
+            <div class="mini-chart-bar"><div class="mini-chart-fill" id="salary-bar"></div></div>
+            <p class="small text-muted mt-2">Deductions impact: <span id="live-impact" class="text-white">0%</span></p>
+          </div>
+
+          <div class="mt-4 p-2">
+            <div class="d-flex justify-content-between mb-2"><span class="small opacity-50">Department</span><span class="small fw-bold" id="live-dept">---</span></div>
+            <div class="d-flex justify-content-between mb-2"><span class="small opacity-50">Position</span><span class="small fw-bold" id="live-pos">---</span></div>
+          </div>
+
+          <div class="mt-auto">
+             <div class="d-flex align-items-center gap-3 p-3 rounded-4" style="background: rgba(255,255,255,0.05)">
+               <div class="bi bi-shield-check-fill text-primary fs-3"></div>
+               <div><p class="m-0 small fw-bold">Cloud Sync Active</p><p class="m-0 tiny opacity-50" style="font-size: 0.6rem">All changes recorded to database</p></div>
+             </div>
+          </div>
+        </div>
+
+        <div class="workspace">
+          <div class="workspace-header">
+            <button class="tab-btn active" id="t1" onclick="jump(1)">Basic Details</button>
+            <button class="tab-btn" id="t2" onclick="jump(2)">Compensation</button>
+            <button class="tab-btn" id="t3" onclick="jump(3)">Statutory</button>
+          </div>
+
+          <form id="proForm">
+            <div class="step-panel active" id="p1">
+              <div class="row g-4">
+                <div class="col-md-6"><div class="floating-field"><label>Employee ID</label><input id="swal-0" value="${data[0]}" ${isEdit ? 'disabled' : ''} onkeyup="calcLive()"></div></div>
+                <div class="col-md-6"><div class="floating-field"><label>Employment Type</label><select id="swal-4"><option value="Regular" ${data[4]=='Regular'?'selected':''}>Regular</option><option value="Probationary" ${data[4]=='Probationary'?'selected':''}>Probationary</option></select></div></div>
+                <div class="col-12"><div class="floating-field"><label>Full Name</label><input id="swal-1" value="${data[1]}" onkeyup="calcLive()"></div></div>
+
+                <div class="col-12">
+                  <div class="exempt-box">
+                    <div class="form-check form-switch m-0">
+                      <input class="form-check-input" type="checkbox" role="switch" id="swal-20" ${data[20] === 'EXEMPTED' ? 'checked' : ''}>
+                      <label class="form-check-label fw-bold small text-primary" for="swal-20">EXEMPT FROM LATE & AUTO-PAY</label>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="col-md-6"><div class="floating-field"><label>Department</label><input id="swal-2" value="${data[2]}" onkeyup="calcLive()"></div></div>
+                <div class="col-md-6"><div class="floating-field"><label>Position</label><input id="swal-3" value="${data[3]}" onkeyup="calcLive()"></div></div>
+                <div class="col-md-6"><div class="floating-field"><label>Email</label><input id="swal-5" type="email" value="${data[5]}"></div></div>
+                
+                <div class="col-md-3"><div class="floating-field"><label>Shift Start</label><input type="time" id="swal-6" value="${formatTimeForInput(data[6])}"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>Shift End</label><input type="time" id="swal-7" value="${formatTimeForInput(data[7])}"></div></div>
+              </div>
+            </div>
+
+            <div class="step-panel" id="p2">
+              <div class="row g-4">
+                <div class="col-md-6"><div class="floating-field"><label>Per Hour Rate</label><input type="number" id="swal-8" value="${data[8]}" onkeyup="calcLive()"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>Overtime Rate</label><input type="number" id="swal-9" value="${data[9]}"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>Night Diff</label><input type="number" id="swal-10" value="${data[10]}"></div></div>
+                <div class="col-md-6"><div class="floating-field"><label>Holiday Premium</label><input type="number" id="swal-11" value="${data[11]}"></div></div>
+                <div class="col-md-6"><div class="floating-field"><label>Premium Rate</label><input type="number" id="swal-12" value="${data[12]}"></div></div>
+                <div class="col-12"><div class="floating-field"><label>Honorarium</label><input type="number" id="swal-13" value="${data[13]}" onkeyup="calcLive()"></div></div>
+              </div>
+            </div>
+
+            <div class="step-panel" id="p3">
+              <div class="row g-4">
+                <div class="col-md-6"><div class="floating-field"><label>Vacation Leave</label><input type="number" id="swal-14" value="${data[14]}"></div></div>
+                <div class="col-md-6"><div class="floating-field"><label>Sick Leave</label><input type="number" id="swal-15" value="${data[15]}"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>SSS</label><input type="number" id="swal-16" value="${data[16]}" onkeyup="calcLive()"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>PhilHealth</label><input type="number" id="swal-17" value="${data[17]}" onkeyup="calcLive()"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>Pag-IBIG</label><input type="number" id="swal-18" value="${data[18]}" onkeyup="calcLive()"></div></div>
+                <div class="col-md-3"><div class="floating-field"><label>W. Tax</label><input type="number" id="swal-19" value="${data[19]}" onkeyup="calcLive()"></div></div>
+              </div>
+            </div>
+          </form>
+
+          <div class="mt-auto d-flex justify-content-between align-items-center">
+            <span class="text-muted small fw-bold" id="step-text">Step 1 of 3</span>
+            <div>
+              <button class="pro-btn pro-btn-next" id="main-btn" onclick="handleFlow()">Next Segment <i class="bi bi-arrow-right ms-2"></i></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `,
+    didOpen: () => {
+      window.cur = 1;
+      window.calcLive = () => {
+        const name = document.getElementById('swal-1').value || "New Employee";
+        const hourlyRate = parseFloat(document.getElementById('swal-8').value) || 0;
+        const honoPerCutoff = parseFloat(document.getElementById('swal-13').value) || 0;
+        const sss = parseFloat(document.getElementById('swal-16').value) || 0;
+        const ph = parseFloat(document.getElementById('swal-17').value) || 0;
+        const pi = parseFloat(document.getElementById('swal-18').value) || 0;
+        const tax = parseFloat(document.getElementById('swal-19').value) || 0;
+        
+        const estGross = (hourlyRate * 8 * 26) + (honoPerCutoff * 2);
+        const totalDeds = sss + ph + pi + tax;
+        const impact = estGross > 0 ? (totalDeds / estGross) * 100 : 0;
+
+        document.getElementById('live-name').innerText = name;
+        document.getElementById('live-id').innerText = "EMP SERIAL: " + (document.getElementById('swal-0').value || "---");
+        document.getElementById('live-salary').innerText = "₱ " + estGross.toLocaleString(undefined, {minimumFractionDigits: 2});
+        document.getElementById('live-dept').innerText = document.getElementById('swal-2').value || "---";
+        document.getElementById('live-pos').innerText = document.getElementById('swal-3').value || "---";
+        document.getElementById('salary-bar').style.width = Math.min(impact, 100) + "%";
+        document.getElementById('live-impact').innerText = impact.toFixed(1) + "%";
+      };
+
+      window.jump = (s) => {
+        window.cur = s;
+        document.querySelectorAll('.step-panel').forEach((p, i) => p.classList.toggle('active', i === s-1));
+        document.querySelectorAll('.tab-btn').forEach((b, i) => b.classList.toggle('active', i === s-1));
+        document.getElementById('step-text').innerText = `Step ${s} of 3`;
+        document.getElementById('main-btn').innerHTML = s === 3 ? 'Finalize & Sync <i class="bi bi-cloud-arrow-up ms-2"></i>' : 'Next Segment <i class="bi bi-arrow-right ms-2"></i>';
+      };
+
+      window.handleFlow = () => {
+        if(window.cur < 3) jump(window.cur + 1);
+        else Swal.clickConfirm();
+      };
+
+      calcLive();
+    },
+    preConfirm: () => {
+      let res = [];
+      // Loop hanggang 20 para makuha ang index 20 (Exempted field)
+      for(let i=0; i<=20; i++) { 
+        let el = document.getElementById(`swal-${i}`);
+        if (i === 20) {
+          // Kunin ang "EXEMPTED" text kung naka-check ang switch
+          res.push(el && el.checked ? "EXEMPTED" : "NONE");
+        } else {
+          res.push(el ? el.value : "");
+        }
+      }
+      return res;
+    }
+  });
+
+  if (formValues) {
+    Swal.fire({ title: 'Processing Transaction...', didOpen: () => Swal.showLoading() });
+    google.script.run.withSuccessHandler(() => {
+      Swal.fire({ icon: 'success', title: 'Ledger Updated', timer: 1500, showConfirmButton: false });
+      loadSettings();
+    }).saveEmployee(...formValues);
+  }
+}
+
+  function editEmployee(id) {
+    const emp = globalSettings.find(r => r[0] == id);
+    if (emp) showAddEmployeeModal(emp);
+  }
+
+  function deleteEmployee(name) {
+    Swal.fire({
+      title: 'Are you sure?',
+      text: `You are about to delete ${name}. This action cannot be reversed!`,
+      icon: 'warning',
+      showCancelButton: true,
+      confirmButtonColor: '#dc3545',
+      confirmButtonText: 'Yes, Delete'
+    }).then((result) => {
+      if (result.isConfirmed) {
+        google.script.run.withSuccessHandler(() => {
+          Swal.fire('Deleted!', 'Record removed.', 'success');
+          loadSettings();
+        }).deleteEmployeeFromSheet(name);
+      }
+    });
+  }
+  function formatTimeForInput(timeString) {
+  if (!timeString) return "";
+  
+  // Kung ang format ay "8:30 AM" o "5:30 PM"
+  const date = new Date("2000/01/01 " + timeString);
+  if (isNaN(date.getTime())) return timeString; // Return as is kung 24h na siya
+  
+  const hh = date.getHours().toString().padStart(2, '0');
+  const mm = date.getMinutes().toString().padStart(2, '0');
+  return hh + ":" + mm; // Lalabas na "08:30" o "17:30" na readable ng browser
+}
+
+  // ==========================================
+  // 3. PAYROLL PROCESSING
+  // ==========================================
+  function initFilters() {
+    google.script.run.withSuccessHandler(list => {
+      // Siguraduhin na ang ID na ito ay tugma sa HTML mo
+      const select = document.getElementById('empFilter'); 
+      if(!select) return;
+      let options = '<option value="ALL">ALL EMPLOYEES</option>';
+      list.forEach(name => { options += `<option value="${name}">${name}</option>`; });
+      select.innerHTML = options;
+    }).getEmployeeList();
+  }
+
+  function handlePeriodChange() {
+    const period = document.getElementById('cutoffPeriod').value;
+    const startInput = document.getElementById('dateStart');
+    const endInput = document.getElementById('dateEnd');
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = today.getMonth();
+
+    if (period === "1") {
+        startInput.value = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+        endInput.value = `${year}-${String(month + 1).padStart(2, '0')}-15`;
+        startInput.style.display = "none"; endInput.style.display = "none";
+    } else if (period === "2") {
+        const lastDay = new Date(year, month + 1, 0).getDate();
+        startInput.value = `${year}-${String(month + 1).padStart(2, '0')}-16`;
+        endInput.value = `${year}-${String(month + 1).padStart(2, '0')}-${lastDay}`;
+        startInput.style.display = "none"; endInput.style.display = "none";
+    } else if (period === "custom") {
+        startInput.style.display = "block"; endInput.style.display = "block";
+    }
+  }
+
+  function loadData() {
+    const start = document.getElementById('dateStart').value;
+    const end = document.getElementById('dateEnd').value;
+    const emp = document.getElementById('empFilter').value || "ALL";
+
+    if (!start || !end) {
+        Swal.fire("Incomplete", "Please select a date range first.", "info");
+        return;
+    }
+
+    // Sa halip na Swal.showLoading na nakakaharang, 
+    // palitan lang natin ang text ng button o lagyan ng small spinner sa table
+    const summaryBody = document.getElementById('summaryBody');
+    summaryBody.innerHTML = '<tr><td colspan="7" class="text-center py-5"><div class="spinner-border text-primary"></div><br>Calculating...</td></tr>';
+
+    google.script.run
+      .withSuccessHandler(res => {
+        updateDashboard(res);
+      })
+      .getHRReport(start, end, emp);
+}
+
+function updateDashboard(res) {
+    const summaryBody = document.getElementById('summaryBody');
+    if (!summaryBody || !res.empList) return;
+
+    let tGross = 0, tDed = 0, tNet = 0;
+
+    const newContent = res.empList.map(emp => {
+        const totalEmpDed = (emp.totalDed + emp.totalFixedDeductions + (emp.totalLeavePay || 0));
+        
+        tGross += emp.totalEarnings;
+        tDed += totalEmpDed;
+        tNet += emp.finalNetPay;
+
+        const leaveInfo = emp.leaveDays > 0 
+            ? `<div class="small text-danger fw-bold">${emp.leaveDays} Day(s)</div>
+               <div class="tiny text-muted">${emp.leaveType || 'Leave'}</div>`
+            : `<div class="text-muted">-</div>`;
+
+        return `
+            <tr onclick='showPayslip(${JSON.stringify(emp)})' style="cursor:pointer" class="text-center align-middle">
+                <td class="ps-4 text-start"> <b>${emp.name}</b><br>
+                    <span class="tiny text-muted">${emp.id || 'N/A'}</span>
+                </td>
+                <td>${emp.days}</td>
+                <td>${leaveInfo}</td>
+                <td>₱${emp.gross.toLocaleString()}</td>
+                <td class="text-danger">₱${totalEmpDed.toLocaleString()}</td>
+                <td class="text-success">₱${emp.totalOT.toLocaleString()}</td>
+                <td class="fw-bold text-primary pe-4">₱${emp.finalNetPay.toLocaleString(undefined, {minimumFractionDigits: 2})}</td>
+            </tr>`;
+    }).join('');
+
+    // Update table content
+    summaryBody.innerHTML = newContent;
+
+    // Update Summary totals with Animation
+    document.getElementById('sum-period').innerText = document.getElementById('cutoffPeriod').options[document.getElementById('cutoffPeriod').selectedIndex].text;
+    document.getElementById('sum-gross').innerText = `₱${tGross.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+    document.getElementById('sum-deduct').innerText = `₱${tDed.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+    document.getElementById('sum-net').innerText = `₱${tNet.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+}
+// Run this on page load to fill the "Total Employees" card immediately
+window.onload = () => {
+  google.script.run.withSuccessHandler(stats => {
+      document.getElementById('card-total-emp').innerText = stats.total;
+  }).getDashboardStats();
+  initFilters();
+};
+let dashboardData = null; // Global variable para ma-store ang listahan
+
+function refreshDashboardCards(isSilent = false) {
+    google.script.run.withSuccessHandler(stats => {
+        dashboardData = stats; 
+        
+        const updateIfChanged = (id, newVal) => {
+            const el = document.getElementById(id);
+            if (el && el.innerText != newVal) {
+                el.innerText = newVal;
+                // Simple 'Pulse' animation para alam na may nagbago
+                el.style.transition = "color 0.3s";
+                el.style.color = "#6366f1"; // Accent color
+                setTimeout(() => el.style.color = "", 1000);
+            }
+        };
+
+        updateIfChanged('card-total-emp', stats.total.count);
+        updateIfChanged('card-present', stats.present.count);
+        updateIfChanged('card-leave', stats.onLeave.count);
+        updateIfChanged('card-holidays', stats.pending.count);
+    }).getDashboardStats();
+}
+
+function showStatDetails(type) {
+    if (!dashboardData) return;
+    
+    let title = "";
+    let htmlContent = "";
+
+    if (type === 'total') {
+        title = "Employee Directory";
+        htmlContent = `<div class="list-group text-start">` + 
+            dashboardData.total.list.map(emp => `
+                <div class="list-group-item border-0 shadow-sm mb-2" style="border-left: 5px solid #007bff;">
+                    <div class="fw-bold text-primary">${emp.name}</div>
+                    <div class="small text-muted">${emp.id} | ${emp.pos}</div>
+                    <div class="badge bg-light text-dark border mt-1">${emp.dept}</div>
+                </div>`).join('') + `</div>`;
+    } 
+    else if (type === 'present') {
+        title = "Employees Present Today";
+        htmlContent = dashboardData.present.list.length > 0 
+            ? `<div class="list-group text-start">` + 
+               dashboardData.present.list.map(name => `
+                <div class="list-group-item border-0 shadow-sm mb-2" style="border-left: 5px solid #28a745;">
+                    <div class="fw-bold text-success"><i class="bi bi-check-circle-fill me-2"></i>${name}</div>
+                    <div class="small text-muted">Timed-in Today</div>
+                </div>`).join('') + `</div>`
+            : `<p class="text-muted text-center py-3">No one has timed in yet.</p>`;
+    }
+    else if (type === 'leave') {
+        title = "Employees On Leave Today";
+        htmlContent = dashboardData.onLeave.list.length > 0 
+            ? `<div class="list-group text-start">` + 
+               dashboardData.onLeave.list.map(l => `
+                <div class="list-group-item border-0 shadow-sm mb-2" style="border-left: 5px solid #ffc107;">
+                    <div class="d-flex justify-content-between">
+                        <span class="fw-bold">${l.name}</span>
+                        <span class="badge bg-warning text-dark">${l.type}</span>
+                    </div>
+                    <div class="small text-muted mt-1">
+                        <i class="bi bi-calendar-event me-1"></i> Period: ${l.start} - ${l.end}
+                    </div>
+                </div>`).join('') + `</div>`
+            : `<p class="text-muted text-center py-3">No one is on leave today.</p>`;
+    }
+    else if (type === 'pending') {
+        title = "Approved Leaves Awaiting Transfer";
+        const pending = dashboardData.pending.list;
+        htmlContent = pending.length > 0 
+            ? `<div class="table-responsive">
+                <table class="table table-sm text-start align-middle" style="font-size: 0.8rem;">
+                    <thead>
+                        <tr class="table-dark text-center">
+                            <th class="text-start">Name</th>
+                            <th>Type</th>
+                            <th>Dates</th>
+                            <th>Days</th>
+                        </tr>
+                    </thead>
+                    <tbody>` + pending.map(l => `
+                        <tr>
+                            <td class="fw-bold">${l.name}</td>
+                            <td class="text-center"><span class="badge bg-info text-dark">${l.type}</span></td>
+                            <td class="text-center small">${l.start}<br>${l.end}</td>
+                            <td class="text-center fw-bold">${l.days}</td>
+                        </tr>
+                        <tr class="bg-light">
+                            <td colspan="4" class="text-muted italic border-bottom-0" style="font-size: 0.75rem;">
+                                <i class="bi bi-chat-left-dots ms-2 me-1"></i>Reason: ${l.reason || 'No reason provided'}
+                            </td>
+                        </tr>`).join('') + `</tbody>
+                </table>
+               </div>`
+            : `<p class="text-muted text-center py-4">No pending requests for transfer.</p>`;
+    }
+
+    Swal.fire({
+        title: `<div class="mb-2" style="font-size: 1.25rem;">${title}</div>`,
+        html: `<div class="custom-swal-content" style="max-height: 400px; overflow-y: auto;">${htmlContent}</div>`,
+        showCloseButton: true,
+        confirmButtonText: 'Dismiss',
+        confirmButtonColor: '#6c757d',
+        width: (type === 'pending' || type === 'total') ? '600px' : '450px'
+    });
+}
+window.onload = () => {
+    // INITIAL LOAD (Para may laman agad pag-open)
+    refreshDashboardCards(); 
+    initFilters();
+    loadSettings();
+    loadPendingLeaves(true);
+    loadAttendanceTab(true);
+    
+    // GLOBAL SYNC TIMER: Lahat ng kailangan i-refresh bawat 15 seconds
+    setInterval(() => {
+        console.log("Global Sync Triggered...");
+        
+        // 1. Dashboard Stats
+        refreshDashboardCards(true); 
+        
+        // 2. Pending Leaves Table
+        loadPendingLeaves(true); 
+        
+        // 3. Employee Master List
+        loadSettings(true); 
+        
+        // 4. Attendance Logs (I-refresh lang kung ito ang naka-open na tab)
+        const attendanceTab = document.getElementById('details-panel');
+        if (attendanceTab && attendanceTab.classList.contains('active')) {
+            loadAttendanceTab(true); 
+        }
+    }, 15000); 
+};
+
+  // ==========================================
+  // 4. PAYSLIP & PRINTING
+  // ==========================================
+function showPayslip(emp) {
+    const start = document.getElementById('dateStart').value;
+    const end = document.getElementById('dateEnd').value;
+    const fmt = (num) => (num || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    const leaveValue = emp.totalLeavePay || 0;
+    const totalEmpDed = (emp.totalDed + emp.totalFixedDeductions + leaveValue);
+    const lateUndertime = emp.totalDed || 0;
+    
+    // Arithmetic logic to match your provided physical slip
+    const totalFixedDeductions = (emp.sss || 0) + (emp.philhealth || 0) + (emp.pagibig || 0) + (emp.wTax || 0);
+    const totalGrossDeductions = totalFixedDeductions + leaveValue + lateUndertime;
+
+    const content = `
+      <style>
+          .payslip-window { font-family: 'Courier New', Courier, monospace; background: #fff; padding: 30px; width: 100%; max-width: 850px; margin: auto; color: #000; border: 1px solid #000; }
+          .header-box { text-align: center; margin-bottom: 15px; border-bottom: 2px solid #000; }
+          .info-grid { display: grid; grid-template-columns: 1.2fr 0.8fr; margin-bottom: 15px; font-size: 13px; line-height: 1.6; }
+          .main-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+          .main-table th { border: 1px solid #000; padding: 5px; background: #eee; text-transform: uppercase; text-align: center; } /* Centered Headers */
+          .main-table td { border-left: 1px solid #000; border-right: 1px solid #000; padding: 4px 8px; vertical-align: top; }
+          .total-row td { border-top: 2px solid #000; border-bottom: 2px solid #000; font-weight: bold; background: #f9f9f9; }
+          .net-section { margin-top: 15px; border: 2px solid #000; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
+          .stamp { color: #b22222; font-weight: bold; border: 3px double #b22222; padding: 5px 15px; transform: rotate(-5deg); font-size: 16px; text-align: center; }
+          .leave-highlight { color: #d9534f; font-weight: bold; }
+          @media print { .no-print { display: none; } }
+      </style>
+
+      <div id="printArea" class="payslip-window">
+          <div class="header-box">
+              <div style="font-size: 10px; letter-spacing: 2px;">PAY SLIP</div>
+              <div style="font-size: 20px; font-weight: bold;">LAKE COOP CABLE TV</div>
+          </div>
+          
+          <div class="info-grid">
+              <div>
+                  <b>Employee ID:</b> ${emp.id || 'N/A'}<br>
+                  <b>Employee Name:</b> ${emp.name.toUpperCase()}<br>
+                  <b>Period:</b> ${start} to ${end}
+              </div>
+              <div style="text-align: right;">
+                  <span class="leave-highlight">LEAVE DAYS: ${emp.leaveDays || 0} DAY(S)</span><br>
+                  <b>LEAVE TYPE:</b> ${emp.leaveType || 'NONE'}<br>
+                  <b>Rate/Hr:</b> ₱${fmt(emp.rate || 0)}
+              </div>
+          </div>
+
+          <table class="main-table">
+              <thead>
+                  <tr>
+                      <th width="35%">EARNINGS</th><th width="15%">AMOUNT</th>
+                      <th width="35%">DEDUCTIONS</th><th width="15%">AMOUNT</th>
+                  </tr>
+              </thead>
+              <tbody>
+                  <tr>
+                      <td>BASIC + COLA</td><td>₱${fmt(emp.gross)}</td>
+                      <td>ABSENCE (LEAVE)</td><td>₱${fmt(leaveValue)}</td>
+                  </tr>
+                  <tr>
+                      <td>OVERTIME PAY</td><td>₱${fmt(emp.totalOT)}</td>
+                      <td>LATE / UNDERTIME</td><td>₱${fmt(lateUndertime)}</td>
+                  </tr>
+                  <tr>
+                      <td>NIGHT DIFFERENTIAL</td><td>₱${fmt(emp.nightDiff || 0)}</td>
+                      <td>SSS CONTRIBUTION</td><td>₱${fmt(emp.sss)}</td>
+                  </tr>
+                  <tr>
+                      <td>HOLIDAY / PREMIUM</td><td>₱${fmt(emp.holidayPay || 0)}</td>
+                      <td>PHILHEALTH</td><td>₱${fmt(emp.philhealth)}</td>
+                  </tr>
+                  <tr>
+                      <td>LEAVE PAY (TAXABLE)</td><td>₱${fmt(leaveValue)}</td>
+                      <td>PAG-IBIG</td><td>₱${fmt(emp.pagibig)}</td>
+                  </tr>
+                  <tr>
+                      <td>OTHERS (TAXABLE - HONO)</td><td>₱${fmt(emp.hono)}</td>
+                      <td>WITHHOLDING TAX</td><td>₱${fmt(emp.wTax)}</td>
+                  </tr>
+                  <tr>
+                      <td>OTHERS (NON-TAXABLE)</td><td>₱0.00</td>
+                      <td>LOANS & OTHER DED.</td><td>₱0.00</td>
+                  </tr>
+                  <tr class="total-row">
+                      <td>GROSS EARNINGS</td><td>₱${fmt(emp.totalEarnings)}</td>
+                      <td>GROSS DEDUCTIONS</td><td>₱${fmt(totalGrossDeductions)}</td>
+                  </tr>
+              </tbody>
+          </table>
+
+          <div class="net-section">
+              <div>
+                  <span style="font-size: 14px; font-weight: bold;">NET PAYABLE:</span><br>
+                  <span style="font-size: 28px; font-weight: 900;">₱${fmt(emp.finalNetPay)}</span>
+              </div>
+              <div class="stamp">
+                  1B TRANCHE<br>₱${fmt(emp.hono)}
+              </div>
+          </div>
+          
+          <div style="margin-top: 20px; font-size: 10px; text-align: center; border-top: 1px dashed #ccc; padding-top: 10px;">
+              I acknowledge receipt of the sum above in full settlement of my wages.
+              <br><br><br>
+              ________________________________<br>
+              Employee Signature / Date
+          </div>
+      </div>`;
+
+    document.getElementById('payslipContent').innerHTML = content;
+    new bootstrap.Modal(document.getElementById('payslipModal')).show();
+}
+
+  // ==========================================
+  // 5. LEAVE MANAGEMENT
+  // ==========================================
+let leaveCache = null;
+
+function initializeApp() {
+    loadPendingLeaves(true); // true = silent load (just updates badge)
+}
+
+function loadPendingLeaves(isSilent = false) {
+    const tbody = document.getElementById('leavePendingBody');
+    const badge = document.getElementById('leaveBadge');
+
+    google.script.run.withSuccessHandler(leaves => {
+        // --- Update Notification Badge ---
+        if (leaves && leaves.length > 0) {
+            badge.innerText = leaves.length;
+            badge.classList.remove('d-none');
+        } else {
+            badge.classList.add('d-none');
+        }
+
+        // If we only wanted to update the badge, stop here
+        if (isSilent || !tbody) return;
+
+        // --- Render Table Content ---
+        if (!leaves || leaves.length === 0) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="5" class="text-center py-5 text-muted">
+                        <i class="bi bi-check2-all fs-1 d-block mb-2 opacity-50"></i>
+                        No pending leave transfers found.
+                    </td>
+                </tr>`;
+            return;
+        }
+
+        tbody.innerHTML = leaves.map(l => `
+            <tr class="align-middle border-bottom">
+                <td class="ps-3 py-3">
+                    <div class="fw-bold text-dark">${l.name}</div>
+                    <div class="small text-muted text-uppercase" style="font-size: 0.7rem;">${l.dept}</div>
+                </td>
+                <td class="text-center">
+                    <span class="badge rounded-pill border bg-white text-dark shadow-sm px-3">${l.type}</span>
+                </td>
+                <td class="text-center">
+                    <div class="small fw-medium">${l.start}</div>
+                    <div class="text-muted" style="line-height: 1;"><i class="bi bi-arrow-down-short"></i></div>
+                    <div class="small fw-medium">${l.end}</div>
+                </td>
+                <td class="text-center fw-bold text-primary">${l.days}</td>
+                <td class="text-end pe-3">
+                    <button class="btn btn-sm btn-primary rounded-pill px-3 shadow-sm" 
+                            onclick="confirmTransfer(${l.row}, '${l.name}', '${l.start}', '${l.end}', '${l.type}')">
+                        <i class="bi bi-send-check-fill me-1"></i> Transfer
+                    </button>
+                </td>
+            </tr>`).join('');
+    }).getPendingLeaves();
+}
+
+// Confirmation Dialog with the Blurred Backdrop
+function confirmTransfer(row, name, start, end, type) {
+    Swal.fire({
+        title: 'Confirm DTR Transfer',
+        html: `Sigurado ka bang i-transfer ang <b>${type}</b> ni <br><b>${name}</b> sa DTR Logs?<br><br><small class="text-muted">Coverage: ${start} - ${end}</small>`,
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#6f42c1',
+        cancelButtonColor: '#d33',
+        confirmButtonText: 'Yes, Proceed',
+        backdrop: `rgba(0,0,0,0.4) blur(8px)` // The requested blur effect
+    }).then((result) => {
+        if (result.isConfirmed) {
+            executeTransfer(row, name, start, end, type);
+        }
+    });
+}
+
+function executeTransfer(row, name, start, end, type) {
+    Swal.fire({ 
+        title: 'Processing Transfer...', 
+        allowOutsideClick: false, 
+        backdrop: `rgba(0,0,0,0.4) blur(8px)`,
+        didOpen: () => Swal.showLoading() 
+    });
+
+    google.script.run.withSuccessHandler(res => {
+        if (res === "Success") {
+            Swal.fire({ icon: 'success', title: 'Transferred!', showConfirmButton: false, timer: 1500 });
+            loadPendingLeaves(); // Refresh the table and the badge
+            if (typeof loadData === 'function') loadData(); // Refresh main attendance table if it exists
+        }
+    }).transferLeaveToDTR(row, name, start, end, type);
+}
+
+  // ==========================================
+  // 6. ATTENDANCE
+  // ==========================================
+
+let attendanceInterval; // Global variable para sa timer
+let cachedEmployeeList = [];
+let attendanceCache = null;
+
+document.addEventListener('DOMContentLoaded', function() {
+    google.script.run.withSuccessHandler(list => {
+        cachedEmployeeList = list;
+    }).getEmployeeList();
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+    // Initial loads
+    refreshDashboardCards();
+    initFilters();
+    loadPendingLeaves(true); // Silent initial load
+    loadAttendanceTab(true); // Silent initial load
+
+    // AUTO-REFRESH TIMER: Bawat 30 seconds mag-che-check ng bagong data
+    setInterval(() => {
+        // I-refresh lang kung ang tab ay visible para makatipid sa server calls
+        loadPendingLeaves(true); 
+        loadAttendanceTab(true);
+        loadSettings(true);
+    }, 15000); 
+
+    // Attendance Tab Click Listener (Cleaned up)
+    const attendanceLink = document.querySelector('[data-bs-target="#details-panel"]');
+    if (attendanceLink) {
+        attendanceLink.addEventListener('click', () => {
+            const startInput = document.getElementById('dateStartLogs');
+            const endInput = document.getElementById('dateEndLogs');
+            if (startInput && endInput && !startInput.value) {
+                const now = new Date();
+                const offset = now.getTimezoneOffset();
+                const localDate = new Date(now.getTime() - (offset * 60 * 1000)).toISOString().split('T')[0];
+                startInput.value = localDate;
+                endInput.value = localDate;
+            }
+        });
+    }
+});
+
+// Function para sa background refresh
+function startAttendanceAutoRefresh() {
+    if (attendanceInterval) clearInterval(attendanceInterval);
+    attendanceInterval = setInterval(() => {
+        // Refresh lang kung ang "Attendance" tab ang kasalukuyang nakikita
+        const attendanceTab = document.getElementById('details-panel');
+        if (attendanceTab && attendanceTab.classList.contains('active')) {
+            loadAttendanceTab(true); // true = silent load (no Swal)
+        }
+    }, 15000); // 30 seconds
+}
+
+function confirmDeleteLog(timestamp, name) {
+  Swal.fire({
+    title: 'Are you sure?',
+    text: `Buburahin ang log ni ${name}. Hindi na ito mababawi.`,
+    icon: 'warning',
+    showCancelButton: true,
+    confirmButtonColor: '#d33',
+    cancelButtonColor: '#3085d6',
+    confirmButtonText: 'Yes, delete it!'
+  }).then((result) => {
+    if (result.isConfirmed) {
+      Swal.fire({ title: 'Deleting...', didOpen: () => Swal.showLoading() });
+      google.script.run.withSuccessHandler(res => {
+        if (res === "Success") {
+          Swal.fire('Deleted!', 'Log has been removed.', 'success');
+          loadAttendanceTab(); // Refresh table
+        } else {
+          Swal.fire('Error', res, 'error');
+        }
+      }).deleteLogRow(timestamp, name);
+    }
+  });
+}
+
+function loadAttendanceTab(isSilent = false) {
+    const tableBody = document.getElementById('tableBody');
+    
+    // 1. INSTANT UI: If we have cached data, show it immediately 
+    // This removes the "Fetching..." flicker when switching back to the tab
+    if (attendanceCache && (tableBody.innerHTML === "" || tableBody.innerHTML.includes('spinner-border'))) {
+        renderAttendanceRows(attendanceCache);
+    } 
+    // Only show the spinner if there is absolutely no data and it's not a silent refresh
+    else if (!isSilent && !attendanceCache) {
+        tableBody.innerHTML = `<tr><td colspan="7" class="text-center py-5"><div class="spinner-border text-primary spinner-border-sm"></div><span class="ms-2 text-muted">Connecting...</span></td></tr>`;
+    }
+
+    const start = document.getElementById('dateStartLogs').value;
+    const end = document.getElementById('dateEndLogs').value;
+    const empFilter = document.getElementById('empFilter')?.value || "ALL";
+
+    google.script.run.withSuccessHandler(res => {
+        if (!res || !res.details) return;
+
+        // 2. BACKGROUND UPDATE: Only update the DOM if the data has actually changed
+        // This prevents the table from "jumping" if the data is the same
+        const newDataString = JSON.stringify(res.details);
+        if (attendanceCache !== newDataString) {
+            attendanceCache = newDataString; 
+            renderAttendanceRows(res.details);
+        }
+    }).getHRReport(start, end, empFilter);
+}
+
+// 3. SEPARATE RENDERER: This handles the actual HTML creation
+function renderAttendanceRows(details) {
+    const tableBody = document.getElementById('tableBody');
+    
+    if (details.length === 0) {
+        tableBody.innerHTML = '<tr><td colspan="7" class="text-center py-5 text-muted">No records found for this period.</td></tr>';
+        return;
+    }
+
+    const newRows = details.map(log => {
+        const isMissing = log.in === 'MISSING' || log.out === 'MISSING';
+        let statusClass = log.status === 'FIXED' ? 'status-fixed' : (isMissing ? 'status-missing' : 'status-present');
+        
+        return `
+            <tr class="align-middle">
+                <td class="text-center"><span class="text-muted fw-medium small">${log.date}</span></td>
+                <td class="text-center">
+                    <div class="d-inline-flex align-items-center">
+                        <div class="avatar-sm me-2 bg-light rounded-circle text-center" style="width:28px; height:28px; line-height:28px;">
+                            <i class="bi bi-person text-secondary small"></i>
+                        </div>
+                        <b class="text-dark">${log.name}</b>
+                    </div>
+                </td>
+                <td class="text-center">
+                    <span class="badge-premium ${statusClass}">
+                        ${isMissing ? 'INCOMPLETE' : log.status}
+                    </span>
+                </td>
+                <td class="text-center">
+                    <span class="${log.in === 'MISSING' ? 'text-danger fw-bold italic' : 'text-success fw-bold'}">${log.in}</span>
+                </td>
+                <td class="text-center">
+                    <span class="${log.out === 'MISSING' ? 'text-danger fw-bold italic' : 'text-danger fw-bold'}">${log.out}</span>
+                </td>
+                <td class="text-center">
+                    <div class="text-muted small mx-auto" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        ${log.remarks || '—'}
+                    </div>
+                </td>
+                <td class="text-center">
+                    <div class="btn-group shadow-sm rounded">
+                        <button class="btn btn-white btn-sm border" onclick="editLogRow('${log.date}', '${log.name}')" title="Edit Log">
+                            <i class="bi bi-pencil-square text-primary"></i>
+                        </button>
+                        <button class="btn btn-white btn-sm border" onclick="confirmDeleteLog('${log.timestamp}', '${log.name}')" title="Delete Log">
+                            <i class="bi bi-trash3 text-danger"></i>
+                        </button>
+                    </div>
+                </td>
+            </tr>`;
+    }).join('');
+
+    tableBody.innerHTML = newRows;
+}
+function editLogRow(date, name) {
+    // 1. Reference the specific row
+    const row = Array.from(document.querySelectorAll('#tableBody tr')).find(r => r.innerText.includes(name) && r.innerText.includes(date));
+    
+    // Get raw text from cells (Cell 3 is IN, Cell 4 is OUT)
+    let rawIn = row ? row.cells[3].innerText.trim() : "MISSING";
+    let rawOut = row ? row.cells[4].innerText.trim() : "MISSING";
+
+    // 2. Determine if it is MISSING (Checkbox Logic)
+    // If it says "MISSING" or is empty or has a dash, we CHECK the box
+    const checkIn = (rawIn.includes("MISSING") || rawIn === "—" || rawIn === "");
+    const checkOut = (rawOut.includes("MISSING") || rawOut === "—" || rawOut === "");
+
+    // 3. Formatting the time for the input field
+    // If it's missing, we want the input to be empty ("")
+    const timeInValue = checkIn ? "" : convertTo24Hour(rawIn);
+    const timeOutValue = checkOut ? "" : convertTo24Hour(rawOut);
+
+    Swal.fire({
+        title: '<span class="fw-bold text-primary">Adjust Attendance</span>',
+        width: '550px',
+        background: '#f8faff',
+        showCancelButton: true,
+        confirmButtonText: 'Confirm Changes',
+        confirmButtonColor: '#4f46e5',
+        html: `
+            <div class="text-start mt-3">
+                <div class="p-3 mb-3 bg-white rounded-3 border shadow-sm border-primary">
+                    <div class="small text-muted text-uppercase fw-bold">Employee</div>
+                    <div class="fs-5 fw-bold text-dark">${name}</div>
+                    <div class="small text-primary"><i class="bi bi-calendar-event"></i> ${date}</div>
+                </div>
+                
+                <div class="row g-3">
+                    <div class="col-6">
+                        <label class="form-label small fw-bold text-success">TIME IN</label>
+                        <div class="input-group">
+                            <div class="input-group-text bg-white border-end-0">
+                                <input type="checkbox" id="edit-in-check" class="form-check-input mt-0" ${checkIn ? 'checked' : ''}>
+                            </div>
+                            <input type="time" id="manualIn" class="form-control border-start-0 ps-0" value="${timeInValue}">
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <label class="form-label small fw-bold text-danger">TIME OUT</label>
+                        <div class="input-group">
+                            <div class="input-group-text bg-white border-end-0">
+                                <input type="checkbox" id="edit-out-check" class="form-check-input mt-0" ${checkOut ? 'checked' : ''}>
+                            </div>
+                            <input type="time" id="manualOut" class="form-control border-start-0 ps-0" value="${timeOutValue}">
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-3">
+                    <label class="form-label small fw-bold text-muted">REASON FOR ADJUSTMENT</label>
+                    <textarea id="manualRemark" class="form-control bg-white shadow-sm" rows="2" placeholder="Describe why this change is needed..."></textarea>
+                </div>
+            </div>
+        `,
+        preConfirm: () => {
+            return {
+                in: document.getElementById('edit-in-check').checked ? document.getElementById('manualIn').value : null,
+                out: document.getElementById('edit-out-check').checked ? document.getElementById('manualOut').value : null,
+                remark: document.getElementById('manualRemark').value || "Manual Adjustment"
+            };
+        }
+    }).then((result) => {
+        if (result.isConfirmed) {
+            Swal.fire({ title: 'Updating...', allowOutsideClick: false, didOpen: () => { Swal.showLoading(); } });
+            google.script.run.withSuccessHandler(() => {
+                loadAttendanceTab();
+                Swal.fire({ icon: 'success', title: 'Log Updated', showConfirmButton: false, timer: 1500 });
+            }).saveManualLog(name, date, result.value.in, result.value.out, result.value.remark);
+        }
+    });
+}
+
+// Helper function to handle "05:30 PM" -> "17:30" conversion for HTML time inputs
+function convertTo24Hour(timeStr) {
+    if (!timeStr || timeStr.includes("MISSING")) return "";
+    const [time, modifier] = timeStr.split(' ');
+    let [hours, minutes] = time.split(':');
+    if (hours === '12') hours = '00';
+    if (modifier === 'PM') hours = parseInt(hours, 10) + 12;
+    return `${hours.toString().padStart(2, '0')}:${minutes}`;
+}
+
+async function addSingleLog() {
+    const options = cachedEmployeeList.map(e => `<option value="${e}">${e}</option>`).join('');
+    
+    const { value: formValues } = await Swal.fire({
+        title: '<i class="bi bi-person-plus-fill me-2"></i>Create Manual Entry',
+        width: '550px',
+        background: '#f0fdf4',
+        // --- BLUR CHANGES START ---
+        backdrop: 'rgba(0,0,0,0.4)',
+        customClass: { container: 'swal-blur-bg' },
+        // --- BLUR CHANGES END ---
+        confirmButtonColor: '#10b981', 
+        confirmButtonText: 'Save Record',
+        showCancelButton: true,
+        showClass: { popup: '', backdrop: '' },
+        hideClass: { popup: '', backdrop: '' },
+        html: `
+            <div class="text-start px-2 mt-3">
+                <div class="mb-4 p-3 rounded-4 bg-white shadow-sm" style="border: 2px solid #10b981;">
+                    <label class="form-label fw-bold text-success small">EMPLOYEE SELECTION</label>
+                    <select id="swal-name" class="form-select border-0 bg-transparent shadow-none">${options}</select>
+                </div>
+
+                <div class="row g-3 mb-4">
+                    <div class="col-12">
+                        <label class="form-label fw-bold small text-muted">TRANSACTION DATE</label>
+                        <input type="date" id="swal-date" class="form-control border-2" value="${new Date().toISOString().split('T')[0]}">
+                    </div>
+                    <div class="col-6">
+                        <div class="p-3 border rounded-4 bg-white shadow-sm border-start border-4 border-success">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="enable-in" checked onchange="document.getElementById('swal-in').disabled = !this.checked">
+                                <label class="form-check-label fw-bold text-success small">TIME IN</label>
+                            </div>
+                            <input type="time" id="swal-in" class="form-control border-0 p-0 fs-5 fw-bold" value="08:30">
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="p-3 border rounded-4 bg-white shadow-sm border-start border-4 border-danger">
+                            <div class="form-check form-switch mb-2">
+                                <input class="form-check-input" type="checkbox" id="enable-out" checked onchange="document.getElementById('swal-out').disabled = !this.checked">
+                                <label class="form-check-label fw-bold text-danger small">TIME OUT</label>
+                            </div>
+                            <input type="time" id="swal-out" class="form-control border-0 p-0 fs-5 fw-bold" value="17:30">
+                        </div>
+                    </div>
+                </div>
+
+                <label class="form-label fw-bold small text-muted">REMARKS / NOTES</label>
+                <input type="text" id="swal-remark" class="form-control py-2 shadow-sm bg-white border-0" placeholder="e.g. System Downtime Correction">
+            </div>
+        `,
+        preConfirm: () => {
+            const hasIn = document.getElementById('enable-in').checked;
+            const hasOut = document.getElementById('enable-out').checked;
+            if (!hasIn && !hasOut) return Swal.showValidationMessage('Select at least IN or OUT');
+            return {
+                name: document.getElementById('swal-name').value,
+                date: document.getElementById('swal-date').value,
+                in: hasIn ? document.getElementById('swal-in').value : null,
+                out: hasOut ? document.getElementById('swal-out').value : null,
+                remark: document.getElementById('swal-remark').value || "Manual Entry"
+            }
+        }
+    });
+
+    if (formValues) {
+        Swal.fire({
+            title: 'Saving Record...',
+            allowOutsideClick: false,
+            // Keep blur during the loading state
+            backdrop: 'rgba(0,0,0,0.4)',
+            customClass: { container: 'swal-blur-bg' },
+            didOpen: () => { Swal.showLoading(); }
+        });
+
+        google.script.run.withSuccessHandler(() => {
+            loadAttendanceTab();
+            Swal.fire({ icon: 'success', title: 'Saved successfully', timer: 1500, showConfirmButton: false });
+        }).saveManualLog(formValues.name, formValues.date, formValues.in, formValues.out, formValues.remark);
+    }
+}
+
+async function bulkAdjustment() {
+    const tableRows = Array.from(document.querySelectorAll('#tableBody tr'));
+    const visibleNames = tableRows.map(row => row.querySelector('b') ? row.querySelector('b').innerText.trim() : "");
+    const exemptedEmployees = tableRows.filter(row => row.innerText.includes('EXEMPTED')).map(row => row.querySelector('b') ? row.querySelector('b').innerText.trim() : "");
+
+    const { value: formValues } = await Swal.fire({
+        title: '<i class="bi bi-lightning-charge-fill me-2"></i>Attendance Adjustment',
+        width: '700px',
+        background: '#fffbeb',
+        backdrop: 'rgba(0,0,0,0.4)',
+        customClass: { container: 'swal-blur-bg' },
+        confirmButtonColor: '#f59e0b',
+        confirmButtonText: 'Apply to Selected',
+        showCancelButton: true,
+        showClass: { popup: '', backdrop: '' },
+        hideClass: { popup: '', backdrop: '' },
+        html: `
+            <div class="text-start px-2 mt-2">
+                <div class="row mb-4 align-items-end">
+                    <div class="col-6">
+                        <label class="form-label small fw-bold text-muted">INCIDENT DATE</label>
+                        <input type="date" id="bulk-date" class="form-control border-warning bg-white" value="${document.getElementById('dateStartLogs').value}">
+                    </div>
+                    <div class="col-6 text-end">
+                        <div class="btn-group shadow-sm">
+                            <button type="button" class="btn btn-sm btn-light border" onclick="toggleBulkSelect(true)">Check All</button>
+                            <button type="button" class="btn btn-sm btn-light border text-danger" onclick="toggleBulkSelect(false)">Clear</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="employee-list-grid border rounded-4 p-3 bg-white shadow-sm" style="max-height: 220px; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    ${cachedEmployeeList.map(e => {
+                        const isVisible = visibleNames.includes(e);
+                        const isExempted = exemptedEmployees.includes(e);
+                        const shouldCheck = isVisible && !isExempted;
+                        return `
+                        <div class="form-check p-2 border rounded-3 ${!isVisible ? 'bg-light opacity-50' : (isExempted ? 'bg-light' : 'bg-white shadow-sm')}">
+                            <input class="form-check-input bulk-check ms-0 me-2" type="checkbox" value="${e}" id="chk-${e}" ${shouldCheck ? 'checked' : ''}>
+                            <label class="form-check-label fw-bold small ${!isVisible || isExempted ? 'text-muted' : 'text-dark'}" for="chk-${e}">
+                                ${e} 
+                                ${!isVisible ? '<span class="badge bg-danger ms-1" style="font-size:10px">ABSENT</span>' : ''}
+                            </label>
+                        </div>`;
+                    }).join('')}
+                </div>
+
+                <div class="row g-3 mt-3">
+                    <div class="col-12">
+                        <div class="p-3 rounded-4 border-dashed bg-white shadow-sm" style="border: 2px dashed #f59e0b;">
+                             <label class="form-label small fw-bold text-warning mb-2">TIME SELECTION (Toggle what to fix)</label>
+                             <div class="d-flex gap-3">
+                                <div class="w-50 text-center border-end">
+                                    <div class="form-check form-switch d-inline-block">
+                                        <input class="form-check-input" type="checkbox" id="bulk-enable-in" checked 
+                                            onchange="document.getElementById('bulk-in').disabled = !this.checked">
+                                        <label class="form-check-label small fw-bold text-success">TIME IN</label>
+                                    </div>
+                                    <input type="time" id="bulk-in" class="form-control form-control-sm border-0 bg-transparent text-center fs-5 fw-bold" value="08:30">
+                                </div>
+                                <div class="w-50 text-center">
+                                    <div class="form-check form-switch d-inline-block">
+                                        <input class="form-check-input" type="checkbox" id="bulk-enable-out" checked 
+                                            onchange="document.getElementById('bulk-out').disabled = !this.checked">
+                                        <label class="form-check-label small fw-bold text-danger">TIME OUT</label>
+                                    </div>
+                                    <input type="time" id="bulk-out" class="form-control form-control-sm border-0 bg-transparent text-center fs-5 fw-bold" value="17:30">
+                                </div>
+                             </div>
+                        </div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label small fw-bold text-muted">AUTO-REMARK REASON</label>
+                        <select id="bulk-remark-select" class="form-select shadow-none border-warning bg-white">
+                            <option value="POWER INTERRUPTION">POWER INTERRUPTION</option>
+                            <option value="SYSTEM MAINTENANCE">SYSTEM MAINTENANCE</option>
+                            <option value="INTERNET OUTAGE">INTERNET OUTAGE</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        `,
+        preConfirm: () => {
+            const selected = Array.from(document.querySelectorAll('.bulk-check:checked')).map(cb => cb.value);
+            const useIn = document.getElementById('bulk-enable-in').checked;
+            const useOut = document.getElementById('bulk-enable-out').checked;
+
+            if (selected.length === 0) return Swal.showValidationMessage('Please select at least one employee');
+            if (!useIn && !useOut) return Swal.showValidationMessage('Enable at least IN or OUT to apply changes');
+
+            return {
+                employees: selected,
+                date: document.getElementById('bulk-date').value,
+                in: useIn ? document.getElementById('bulk-in').value : null,
+                out: useOut ? document.getElementById('bulk-out').value : null,
+                remark: document.getElementById('bulk-remark-select').value + " (AUTO-FIX)"
+            }
+        }
+    });
+
+    if (formValues) {
+        Swal.fire({ 
+            title: 'Processing...', 
+            allowOutsideClick: false, 
+            backdrop: 'rgba(0,0,0,0.4)',
+            customClass: { container: 'swal-blur-bg' },
+            didOpen: () => { Swal.showLoading(); } 
+        });
+
+        google.script.run.withSuccessHandler(() => {
+            loadAttendanceTab();
+            Swal.fire({ icon: 'success', title: 'Bulk Update Complete', timer: 1500, showConfirmButton: false });
+        }).saveBulkLogs(formValues.employees, formValues.date, formValues.in, formValues.out, formValues.remark);
+    }
+}
+
+// Helper Functions
+function toggleManualRemark(val) {
+  const manualInput = document.getElementById('bulk-remark-manual');
+  manualInput.classList.toggle('d-none', val !== "OTHERS");
+}
+
+function toggleBulkSelect(shouldCheck) {
+  document.querySelectorAll('.bulk-check').forEach(cb => {
+    // Hindi pa rin mag-che-check ang exempted kahit mag-Select All
+    if (shouldCheck && cb.getAttribute('data-exempted') === "true") {
+      cb.checked = false;
+    } else {
+      cb.checked = shouldCheck;
+    }
+  });
+}
+</script>
