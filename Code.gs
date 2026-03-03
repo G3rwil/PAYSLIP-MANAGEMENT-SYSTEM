@@ -5,7 +5,8 @@ function doGet() {
     .evaluate()
     .setTitle('WorkforcePay System')
     .setFaviconUrl('https://i.ibb.co/60M2J7YZ/image.png')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL); // Allows embedding
 }
 
 function include(filename) {

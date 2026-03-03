@@ -849,7 +849,7 @@ function loadPendingLeaves(isSilent = false) {
 function confirmTransfer(row, name, start, end, type) {
     Swal.fire({
         title: 'Confirm DTR Transfer',
-        html: `Sigurado ka bang i-transfer ang <b>${type}</b> ni <br><b>${name}</b> sa DTR Logs?<br><br><small class="text-muted">Coverage: ${start} - ${end}</small>`,
+        html: `Are you sure you want to transfer <b>${type}</b> of <br><b>${name}</b> to DTR Logs?<br><br> <small class="text-muted">Coverage: ${start} - ${end}</small>`,
         icon: 'warning',
         showCancelButton: true,
         confirmButtonColor: '#6f42c1',
@@ -941,7 +941,7 @@ function startAttendanceAutoRefresh() {
 function confirmDeleteLog(timestamp, name) {
   Swal.fire({
     title: 'Are you sure?',
-    text: `Buburahin ang log ni ${name}. Hindi na ito mababawi.`,
+    text: `Delete the log of ${name}. This action cannot be undone.`,
     icon: 'warning',
     showCancelButton: true,
     confirmButtonColor: '#d33',
